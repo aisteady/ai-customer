@@ -262,7 +262,7 @@ uv run python start_mcp.py
 ### 9.2 安装与配置本应用
 
 ```bash
-git clone https://github.com/<your-username>/ai-customer.git
+git clone https://github.com/aisteady/ai-customer.git
 cd ai-customer
 
 # 推荐：uv
