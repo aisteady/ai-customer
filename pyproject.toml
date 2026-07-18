@@ -1,0 +1,19 @@
+[project]
+name = "ai-customer"
+version = "1.0.0"
+description = "企业知识库智能客服：MCP 混合检索 + DashScope RAG 多轮问答"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "streamlit>=1.30.0",
+    "python-dotenv>=1.0.0",
+    "dashscope>=1.20.0",
+    "requests>=2.31.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+package = false
