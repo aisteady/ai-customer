@@ -2,7 +2,8 @@
 AI 客服 — 配置加载
 ==================
 
-优先读本目录 `.env`，再尝试继承中台根目录 `.env`（DASHSCOPE_API_KEY 等）。
+读取本目录 `.env`。可选：若环境变量 `AI_HUB_ENV` 指向中台根 `.env` 文件，
+则在不覆盖已有键的前提下合并加载（便于共用 DASHSCOPE_API_KEY）。
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ _DEMO_DIR = Path(__file__).resolve().parent
 
 def _load_env() -> None:
     load_dotenv(_DEMO_DIR / ".env")
-    # models/ai_customer → parents[2] = 仓库根
-    if len(_DEMO_DIR.parents) >= 3:
-        root_env = _DEMO_DIR.parents[2] / ".env"
-        if root_env.exists():
-            load_dotenv(root_env, override=False)
+    hub_env = os.getenv("AI_HUB_ENV", "").strip()
+    if hub_env:
+        path = Path(hub_env)
+        if path.is_file():
+            load_dotenv(path, override=False)
 
 
 _load_env()
