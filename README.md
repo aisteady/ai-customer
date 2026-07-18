@@ -3,7 +3,8 @@
 基于 **RAG（检索增强生成）** 的企业知识库智能客服应用。  
 通过 **MCP（Model Context Protocol）** 对接上游 AI 数据中台的混合检索能力，再调用 **通义千问（DashScope）** 生成有依据的客服回答；本地用 SQLite 持久化多轮会话。
 
-> 本目录可整体拷贝为独立仓库使用，不依赖中台源码，仅依赖其已启动的 MCP / API 服务。
+> **独立仓库**：不依赖中台源码，仅依赖其已启动的 MCP / API 服务（知识库、检索、项目提示词）。  
+> GitHub：https://github.com/aisteady/ai-customer
 
 ---
 
@@ -332,7 +333,7 @@ uv run python demo.py --tool search --query "请假流程"
 2. **流式输出**：DashScope stream + Streamlit `st.write_stream`；
 3. **评价反馈**：点赞/点踩写回中台，用于检索与 Prompt 迭代；
 4. **多 Agent**：工单创建、转人工，仍通过 MCP 工具扩展；
-5. **独立仓库化**：增加本目录 `pyproject.toml` / `requirements.txt`，与中台完全分离发布。
+5. **中台仓库联动**：与 [AI 数据中台](https://github.com/aisteady) 联调演示端到端 RAG；本仓库仅作上层应用发布。
 
 ---
 
