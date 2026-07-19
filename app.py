@@ -31,7 +31,7 @@ def _svc() -> CustomerService:
 def main() -> None:
     st.set_page_config(page_title="AI 客服", page_icon="💬", layout="wide")
     st.title("AI 客服")
-    st.caption("基于 AI数据中台 MCP 混合检索 + DashScope 大模型")
+    st.caption("基于 AI数据中台 MCP（Streamable HTTP）混合检索 + DashScope 大模型")
 
     svc = _svc()
 

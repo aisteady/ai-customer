@@ -3,8 +3,7 @@
 基于 **RAG（检索增强生成）** 的企业知识库智能客服应用。  
 通过 **MCP（Model Context Protocol）** 对接上游 AI 数据中台的混合检索能力，再调用 **通义千问（DashScope）** 生成有依据的客服回答；本地用 SQLite 持久化多轮会话。
 
-> **独立仓库**：不依赖中台源码，仅依赖其已启动的 MCP / API 服务（知识库、检索、项目提示词）。  
-> GitHub：https://github.com/aisteady/ai-customer
+> 本目录可整体拷贝为独立仓库使用，不依赖中台源码，仅依赖其已启动的 MCP / API 服务。
 
 ---
 
@@ -61,7 +60,7 @@
 |------|------|------|
 | 交互层 | Streamlit / CLI | Web 聊天界面、终端调试 |
 | 编排层 | Python 3.10+ | `CustomerService` 串联召回、Prompt、生成、落库 |
-| 协议层 | 自研 MCP TCP 客户端 | JSON 行协议调用 `tools/list`、`tools/call` |
+| 协议层 | 官方 MCP Streamable HTTP 客户端 | `MCP_URL` + Bearer 调用 tools |
 | 检索层 | 上游 AI 数据中台 | 混合检索、项目 Prompt、链路追踪 |
 | 生成层 | 阿里云 DashScope（Qwen） | 对话式生成客服话术 |
 | 存储层 | SQLite | 本地会话与消息（含引用 JSON） |
@@ -94,13 +93,13 @@
 │         └────────────┬──────────────────────────────────┘  │
 │                      ▼                                     │
 │              mcp_client.py                                 │
-│           TCP :8765  JSON-RPC 风格                         │
+│           Streamable HTTP …/mcp + Bearer                   │
 └──────────────────────┬──────────────────────────────────────┘
                        │  search_documents / get_project_prompt …
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              AI 数据中台（独立服务，需先启动）                 │
-│  MCP Server → FastAPI → PostgreSQL + pgvector               │
+│  MCP Streamable HTTP → FastAPI → PostgreSQL + pgvector      │
 │  文档入库 / 混合检索 / 项目 Prompt / 链路追踪                 │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -182,11 +181,10 @@
 ## 7. 目录与模块说明
 
 ```text
-ai-customer/
-├── README.md
-├── pyproject.toml / requirements.txt
-├── .env.example
-├── .gitignore
+ai_customer/
+├── README.md           # 本说明
+├── .env.example        # 环境变量模板
+├── .env                # 本地配置（勿提交密钥）
 ├── app.py              # Streamlit 客服主界面
 ├── cli_chat.py         # 终端多轮问答
 ├── demo.py             # MCP 连通性 / 工具自检
@@ -198,7 +196,7 @@ ai-customer/
 ├── store.py            # SQLite 会话存储
 └── data/
     ├── .gitkeep
-    └── chat.db         # 运行后生成（默认路径，已 gitignore）
+    └── chat.db         # 运行后生成（默认路径）
 ```
 
 | 模块 | 职责 | 面试可讲点 |
@@ -224,10 +222,12 @@ cp .env.example .env
 |------|------|------|------|
 | `PROJECT_ID` | 是 | 中台项目 UUID，限定检索范围 | 空 |
 | `DASHSCOPE_API_KEY` | 问答生成时必填 | 通义 API Key；不填则仅召回降级 | 空 |
-| `MCP_HOST` | 否 | MCP 地址 | `127.0.0.1` |
-| `MCP_PORT` | 否 | MCP 端口 | `8765` |
-| `MCP_TCP_SECRET` | 视中台而定 | 若中台开启 TCP 鉴权则必填 | 空 |
-| `MCP_TIMEOUT` | 否 | 连接/读写超时（秒） | `120` |
+| `MCP_TRANSPORT` | 否 | `http`（默认）或遗留 `tcp` | `http` |
+| `MCP_URL` | HTTP 时 | Streamable HTTP 地址 | `http://127.0.0.1:8765/mcp` |
+| `MCP_CLIENT_TOKEN` | 视中台而定 | Bearer，与中台 `MCP_CLIENT_TOKEN` 一致 | 空 |
+| `MCP_HOST` / `MCP_PORT` | TCP 时 | 遗留 TCP 地址（中台 `MCP_ENABLE_TCP`） | `127.0.0.1` / `8766` |
+| `MCP_TCP_SECRET` | TCP 时 | 遗留 TCP auth_token | 空 |
+| `MCP_TIMEOUT` | 否 | 超时（秒） | `120` |
 | `LLM_MODEL` | 否 | 如 `qwen-plus` / `qwen-turbo` | `qwen-plus` |
 | `TOP_K` | 否 | 召回条数 | `5` |
 | `SEARCH_THRESHOLD` | 否 | 向量相似度阈值 | `0.45` |
@@ -236,7 +236,7 @@ cp .env.example .env
 配置加载顺序（`config.py`）：
 
 1. 本目录 `.env`
-2. 若设置了环境变量 `AI_HUB_ENV` 指向中台根 `.env` 文件路径，则合并加载且**不覆盖**已有键
+2. 若存在上两级仓库根 `.env`，**不覆盖**已有键（便于共用 `DASHSCOPE_API_KEY`）
 
 ---
 
@@ -244,7 +244,7 @@ cp .env.example .env
 
 ### 9.1 前置：启动 AI 数据中台
 
-本应用是「上层客服」，需要上游知识中台提供 MCP（默认 `127.0.0.1:8765`）。在中台仓库中：
+在中台仓库中（与本目录同 monorepo 时，在仓库根执行）：
 
 ```bash
 # 终端 A：API
@@ -260,38 +260,28 @@ uv run python start_mcp.py
 - 目标 `PROJECT_ID` 下已有 **processed** 状态文档；
 - （可选）在中台「提示词管理」为该项目配置 system Prompt。
 
-### 9.2 安装与配置本应用
+### 9.2 配置本应用
 
 ```bash
-git clone https://github.com/aisteady/ai-customer.git
-cd ai-customer
-
-# 推荐：uv
-uv sync
-
-# 或：pip
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-
+cd models/ai_customer   # 或拷贝后的独立项目根目录
 cp .env.example .env
 # 编辑 PROJECT_ID、DASHSCOPE_API_KEY、可选 MCP_TCP_SECRET
 ```
 
 ### 9.3 启动客服
 
+在**仓库根**（若仍在 monorepo）或本目录（需已安装依赖）：
+
 ```bash
 # Web UI
-uv run streamlit run app.py
-# 或：streamlit run app.py
+uv run streamlit run models/ai_customer/app.py
 
 # 终端多轮
-uv run python cli_chat.py
+uv run python models/ai_customer/cli_chat.py
 
 # 连通性自检
-uv run python demo.py --tool list
-uv run python demo.py --tool search --query "请假流程"
+uv run python models/ai_customer/demo.py --tool list
+uv run python models/ai_customer/demo.py --tool search --query "请假流程"
 ```
 
 浏览器打开 Streamlit 提示的本地地址（默认 `http://localhost:8501`），即可开始问答。
@@ -333,7 +323,7 @@ uv run python demo.py --tool search --query "请假流程"
 2. **流式输出**：DashScope stream + Streamlit `st.write_stream`；
 3. **评价反馈**：点赞/点踩写回中台，用于检索与 Prompt 迭代；
 4. **多 Agent**：工单创建、转人工，仍通过 MCP 工具扩展；
-5. **中台仓库联动**：与 [AI 数据中台](https://github.com/aisteady) 联调演示端到端 RAG；本仓库仅作上层应用发布。
+5. **独立仓库化**：增加本目录 `pyproject.toml` / `requirements.txt`，与中台完全分离发布。
 
 ---
 
