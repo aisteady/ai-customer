@@ -1,59 +1,166 @@
 """
-AI 客服 Demo — MCP TCP 客户端
-==============================
+AI 客服 — 官方 MCP Streamable HTTP 客户端
+==========================================
 
-连接数据中台已启动的 MCP 服务（默认 tcp://127.0.0.1:8765），
-发送 JSON-RPC 风格请求并解析响应。
+连接数据中台 MCP（默认 http://127.0.0.1:8765/mcp），
+使用官方 MCP Python SDK 的 Streamable HTTP 传输。
 
-协议要点（与 src/mcp/server.py 一致）：
-- 每条消息为一行 JSON + 换行 \\n
-- method: tools/list | tools/call
-- 若服务端配置了 MCP_TCP_SECRET，请求根字段须含 auth_token
-
-学习要点：
-- 本 Demo 模拟「外部项目」通过 TCP 调用 MCP，与 Streamlit / FastAPI 主工程解耦
-- 生产环境也可改用 HTTP 直连 FastAPI + PROJECT_SERVICE_TOKEN（见 .env.example 注释）
+兼容：若 MCP_TRANSPORT=tcp，则回退到遗留 TCP（过渡期）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 from typing import Any
 
 
 class MCPClientError(Exception):
-    """MCP 调用失败（网络、协议或服务端 error 字段）。"""
+    """MCP 调用失败（网络、协议或服务端 error）。"""
+
+
+def _extract_tool_text(result: Any) -> str:
+    """从官方 call_tool 结果中取出文本。"""
+    if result is None:
+        return ""
+    # CallToolResult: content list of TextContent
+    content = getattr(result, "content", None)
+    if content is None and isinstance(result, dict):
+        content = result.get("content")
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            text = getattr(item, "text", None)
+            if text is None and isinstance(item, dict):
+                text = item.get("text")
+            if text:
+                parts.append(str(text))
+        if parts:
+            return "\n".join(parts)
+    structured = getattr(result, "structuredContent", None) or getattr(result, "data", None)
+    if structured is not None:
+        return structured if isinstance(structured, str) else json.dumps(structured, ensure_ascii=False)
+    return str(result)
+
+
+class MCPHttpClient:
+    """官方 Streamable HTTP MCP 客户端（同步封装）。"""
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        bearer_token: str = "",
+        timeout: float = 120,
+    ) -> None:
+        self.url = url.rstrip("/")
+        self.bearer_token = bearer_token
+        self.timeout = timeout
+        self.last_trace_id: str | None = None
+
+    def _headers(self, trace_id: str | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.bearer_token:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        if trace_id:
+            headers["X-Trace-Id"] = trace_id
+            self.last_trace_id = trace_id
+        return headers
+
+    async def _call_tool_async(self, name: str, parameters: dict[str, Any], trace_id: str | None) -> str:
+        try:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamablehttp_client
+        except ImportError as exc:
+            raise MCPClientError("请安装官方 mcp 包：pip install mcp") from exc
+
+        headers = self._headers(trace_id)
+        try:
+            async with streamablehttp_client(
+                self.url,
+                headers=headers or None,
+                timeout=self.timeout,
+            ) as (read, write, _get_session_id):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, parameters or {})
+                    return _extract_tool_text(result)
+        except MCPClientError:
+            raise
+        except Exception as exc:
+            raise MCPClientError(f"MCP HTTP 调用失败 ({self.url}): {exc}") from exc
+
+    async def _list_tools_async(self) -> list[dict[str, Any]]:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        async with streamablehttp_client(
+            self.url,
+            headers=self._headers() or None,
+            timeout=self.timeout,
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                out = []
+                for t in tools.tools:
+                    out.append(
+                        {
+                            "name": t.name,
+                            "description": t.description or "",
+                            "parameters": {},
+                        }
+                    )
+                return out
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        try:
+            return asyncio.run(self._list_tools_async())
+        except MCPClientError:
+            raise
+        except Exception as exc:
+            raise MCPClientError(f"MCP list_tools 失败: {exc}") from exc
+
+    def call_tool(
+        self,
+        name: str,
+        parameters: dict[str, Any] | None = None,
+        *,
+        trace_id: str | None = None,
+    ) -> str:
+        try:
+            return asyncio.run(self._call_tool_async(name, parameters or {}, trace_id))
+        except MCPClientError:
+            raise
+        except Exception as exc:
+            raise MCPClientError(f"MCP call_tool 失败: {exc}") from exc
+
+    # 兼容旧接口名
+    def call(self, method: str, params: dict | None = None, *, trace_id: str | None = None) -> Any:
+        if method == "tools/list":
+            return self.list_tools()
+        if method == "tools/call":
+            p = params or {}
+            return self.call_tool(p.get("name"), p.get("parameters") or {}, trace_id=trace_id)
+        raise MCPClientError(f"不支持的 method: {method}")
 
 
 class MCPTcpClient:
-    """
-    同步 TCP MCP 客户端（Demo 够用；高并发场景可改为 asyncio）。
-
-    Args:
-        host: MCP 服务地址，默认 127.0.0.1
-        port: MCP 端口，默认 8765
-        auth_token: 与数据中台 .env 的 MCP_TCP_SECRET 一致；未配置 secret 时可留空
-        timeout:  socket 超时秒数
-    """
+    """遗留 TCP 客户端（过渡期 MCP_TRANSPORT=tcp 时使用）。"""
 
     def __init__(
         self,
         host: str = "127.0.0.1",
-        port: int = 8765,
+        port: int = 8766,
         auth_token: str = "",
-        timeout: float = 120.0,
+        timeout: float = 120,
     ) -> None:
         self.host = host
         self.port = port
         self.auth_token = auth_token
         self.timeout = timeout
-        self._request_id = 0
         self.last_trace_id: str | None = None
-
-    def _next_id(self) -> int:
-        self._request_id += 1
-        return self._request_id
 
     def call(
         self,
@@ -62,21 +169,9 @@ class MCPTcpClient:
         *,
         trace_id: str | None = None,
     ) -> Any:
-        """
-        发送单次 MCP 请求并返回 result 字段。
-
-        可选传入 trace_id（根字段）；响应根字段也会带回同一 trace_id。
-        最近一次响应的 trace_id 保存在 self.last_trace_id。
-
-        Raises:
-            MCPClientError: 连接失败或响应含 error
-        """
-        payload: dict[str, Any] = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params or {},
-            "id": self._next_id(),
-        }
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method, "id": 1}
+        if params is not None:
+            payload["params"] = params
         if self.auth_token:
             payload["auth_token"] = self.auth_token
         if trace_id:
@@ -94,14 +189,11 @@ class MCPTcpClient:
         return raw.get("result")
 
     def _send_line(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """写入一行 JSON，读取一行 JSON 响应。"""
         message = json.dumps(payload, ensure_ascii=False) + "\n"
         data = b""
-
         try:
             with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
                 sock.sendall(message.encode("utf-8"))
-                # MCP Server 每条响应以换行结束
                 while b"\n" not in data:
                     chunk = sock.recv(65536)
                     if not chunk:
@@ -109,12 +201,11 @@ class MCPTcpClient:
                     data += chunk
         except OSError as exc:
             raise MCPClientError(
-                f"无法连接 MCP {self.host}:{self.port}，请确认已运行 start_mcp.py 且 API 已启动: {exc}"
+                f"无法连接 MCP TCP {self.host}:{self.port}，请确认 MCP_ENABLE_TCP=true: {exc}"
             ) from exc
 
         if not data:
             raise MCPClientError("MCP 未返回数据")
-
         line = data.decode("utf-8").strip().split("\n")[0]
         try:
             return json.loads(line)
@@ -122,7 +213,6 @@ class MCPTcpClient:
             raise MCPClientError(f"MCP 响应非 JSON: {line[:200]}") from exc
 
     def list_tools(self) -> list[dict[str, Any]]:
-        """tools/list → 工具定义列表。"""
         result = self.call("tools/list")
         return result if isinstance(result, list) else []
 
@@ -133,15 +223,28 @@ class MCPTcpClient:
         *,
         trace_id: str | None = None,
     ) -> str:
-        """
-        tools/call → 执行指定工具，返回文本结果。
-
-        Example:
-            client.call_tool("search_documents", {"query": "退款流程", "project_id": "..."})
-        """
         result = self.call(
             "tools/call",
             {"name": name, "parameters": parameters or {}},
             trace_id=trace_id,
         )
         return str(result) if result is not None else ""
+
+
+def build_mcp_client():
+    """按配置创建 HTTP 或 TCP 客户端。"""
+    from config import settings
+
+    transport = (settings.mcp_transport or "http").lower()
+    if transport == "tcp":
+        return MCPTcpClient(
+            host=settings.mcp_host,
+            port=settings.mcp_port,
+            auth_token=settings.mcp_tcp_secret,
+            timeout=settings.mcp_timeout,
+        )
+    return MCPHttpClient(
+        url=settings.mcp_url,
+        bearer_token=settings.mcp_client_token or settings.mcp_tcp_secret,
+        timeout=settings.mcp_timeout,
+    )

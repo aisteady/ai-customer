@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from config import settings
 from llm import DEFAULT_SYSTEM_PROMPT, DashScopeChat, LlmError
-from mcp_client import MCPClientError, MCPTcpClient
+from mcp_client import MCPClientError, build_mcp_client
 from rag import RagRetriever, RetrievalResult
 from store import ChatStore
 
@@ -31,12 +31,7 @@ class Answer:
 class CustomerService:
     def __init__(self) -> None:
         self.settings = settings
-        self.client = MCPTcpClient(
-            host=settings.mcp_host,
-            port=settings.mcp_port,
-            auth_token=settings.mcp_tcp_secret,
-            timeout=settings.mcp_timeout,
-        )
+        self.client = build_mcp_client()
         self.retriever = RagRetriever(
             self.client,
             project_id=settings.project_id,

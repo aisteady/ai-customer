@@ -2,8 +2,7 @@
 AI 客服 — 配置加载
 ==================
 
-读取本目录 `.env`。可选：若环境变量 `AI_HUB_ENV` 指向中台根 `.env` 文件，
-则在不覆盖已有键的前提下合并加载（便于共用 DASHSCOPE_API_KEY）。
+优先读本目录 `.env`，再尝试继承中台根目录 `.env`（DASHSCOPE_API_KEY 等）。
 """
 
 from __future__ import annotations
@@ -19,11 +18,10 @@ _DEMO_DIR = Path(__file__).resolve().parent
 
 def _load_env() -> None:
     load_dotenv(_DEMO_DIR / ".env")
-    hub_env = os.getenv("AI_HUB_ENV", "").strip()
-    if hub_env:
-        path = Path(hub_env)
-        if path.is_file():
-            load_dotenv(path, override=False)
+    if len(_DEMO_DIR.parents) >= 3:
+        root_env = _DEMO_DIR.parents[2] / ".env"
+        if root_env.exists():
+            load_dotenv(root_env, override=False)
 
 
 _load_env()
@@ -35,8 +33,13 @@ def env(name: str, default: str = "") -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    # http（默认，官方 Streamable HTTP）| tcp（遗留）
+    mcp_transport: str = env("MCP_TRANSPORT", "http")
+    mcp_url: str = env("MCP_URL", "http://127.0.0.1:8765/mcp")
+    mcp_client_token: str = env("MCP_CLIENT_TOKEN")
     mcp_host: str = env("MCP_HOST", "127.0.0.1")
-    mcp_port: int = int(env("MCP_PORT", "8765") or "8765")
+    # TCP 过渡期默认 8766；HTTP 模式下此字段仅作兼容
+    mcp_port: int = int(env("MCP_PORT", "8766") or "8766")
     mcp_tcp_secret: str = env("MCP_TCP_SECRET")
     mcp_timeout: float = float(env("MCP_TIMEOUT", "120") or "120")
     project_id: str = env("PROJECT_ID")

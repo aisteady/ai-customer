@@ -48,7 +48,7 @@ if str(_DEMO_DIR) not in sys.path:
 
 from dotenv import load_dotenv
 
-from mcp_client import MCPClientError, MCPTcpClient
+from mcp_client import MCPClientError, build_mcp_client
 
 # 优先加载 Demo 专用 .env，再 fallback 项目根 .env
 load_dotenv(_DEMO_DIR / ".env")
@@ -61,28 +61,29 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
-def build_client() -> MCPTcpClient:
-    """从环境变量构建 MCP 客户端。"""
-    return MCPTcpClient(
-        host=_env("MCP_HOST", "127.0.0.1"),
-        port=int(_env("MCP_PORT", "8765")),
-        auth_token=_env("MCP_TCP_SECRET"),
-        timeout=float(_env("MCP_TIMEOUT", "120")),
-    )
+def build_client():
+    """从环境变量构建 MCP 客户端（默认 HTTP）。"""
+    return build_mcp_client()
 
 
 def print_banner() -> None:
     print("=" * 60)
     print("  AI 客服 × 数据中台 MCP 连接 Demo")
     print("=" * 60)
-    print(f"  MCP 地址: {_env('MCP_HOST', '127.0.0.1')}:{_env('MCP_PORT', '8765')}")
+    transport = _env("MCP_TRANSPORT", "http")
+    if transport == "tcp":
+        print(f"  传输: TCP {_env('MCP_HOST', '127.0.0.1')}:{_env('MCP_PORT', '8766')}")
+    else:
+        print(f"  传输: HTTP {_env('MCP_URL', 'http://127.0.0.1:8765/mcp')}")
     print(f"  项目 ID:  {_env('PROJECT_ID') or '(未设置，搜索将不限定项目)'}")
-    print(f"  TCP 认证: {'已配置 MCP_TCP_SECRET' if _env('MCP_TCP_SECRET') else '未配置（开发环境本地连接）'}")
+    print(
+        f"  Bearer: {'已配置' if (_env('MCP_CLIENT_TOKEN') or _env('MCP_TCP_SECRET')) else '未配置（开发可空）'}"
+    )
     print("=" * 60)
     print()
 
 
-def demo_list_tools(client: MCPTcpClient) -> None:
+def demo_list_tools(client) -> None:
     """步骤 1：列出 MCP 注册的工具。"""
     print("[1/4] tools/list — 可用工具")
     print("-" * 40)
@@ -98,7 +99,7 @@ def demo_list_tools(client: MCPTcpClient) -> None:
     print()
 
 
-def demo_search(client: MCPTcpClient, query: str, project_id: str, top_k: int) -> None:
+def demo_search(client, query: str, project_id: str, top_k: int) -> None:
     """步骤 2：语义搜索文档片段（RAG 召回）。"""
     import uuid
 
@@ -116,7 +117,7 @@ def demo_search(client: MCPTcpClient, query: str, project_id: str, top_k: int) -
     print()
 
 
-def demo_project_stats(client: MCPTcpClient, project_id: str) -> None:
+def demo_project_stats(client, project_id: str) -> None:
     """步骤 3：查看项目文档/向量统计。"""
     if not project_id:
         print("[3/4] get_project_statistics — 跳过（未设置 PROJECT_ID）")
@@ -129,7 +130,7 @@ def demo_project_stats(client: MCPTcpClient, project_id: str) -> None:
     print()
 
 
-def demo_tables(client: MCPTcpClient, project_id: str, *, create_sample: bool = True) -> None:
+def demo_tables(client, project_id: str, *, create_sample: bool = True) -> None:
     """步骤 4：在项目 schema 内 list / create 样例表。"""
     if not project_id:
         print("[4/4] tables — 跳过（未设置 PROJECT_ID）")

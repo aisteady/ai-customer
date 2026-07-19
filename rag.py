@@ -7,8 +7,9 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
-from mcp_client import MCPClientError, MCPTcpClient
+from mcp_client import MCPClientError
 
 
 @dataclass
@@ -76,7 +77,7 @@ def parse_search_result(text: str) -> list[RetrievedChunk]:
 class RagRetriever:
     def __init__(
         self,
-        client: MCPTcpClient,
+        client: Any,
         *,
         project_id: str,
         top_k: int = 5,
