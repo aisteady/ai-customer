@@ -1,7 +1,7 @@
-﻿[project]
+[project]
 name = "ai-customer"
-version = "1.1.0"
-description = "企业知识库智能客服：官方 MCP Streamable HTTP + DashScope RAG"
+version = "1.2.0"
+description = "企业知识库智能客服：官方 MCP Streamable HTTP + DashScope RAG，会话存 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
@@ -11,11 +11,26 @@ dependencies = [
     "requests>=2.31.0",
     "mcp>=1.9.0",
     "httpx>=0.27.0",
+    "psycopg[binary]>=3.1.0",
 ]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "cli_chat",
+    "config",
+    "db",
+    "demo",
+    "llm",
+    "mcp_client",
+    "rag",
+    "service",
+    "store",
+]
 
 [tool.uv]
 package = false

@@ -1,14 +1,19 @@
 """
-AI 客服 — 本地会话存储（SQLite）
+AI 客服 — 会话存储（PostgreSQL）
+================================
+
+数据在中台同一 PostgreSQL 的 schema `ai_customer` 中，
+不再写入项目目录下的 SQLite 文件。
 """
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+
+from db import connect
+from config import settings
 
 
 def _utc_now() -> str:
@@ -27,56 +32,64 @@ class Message:
 
 
 class ChatStore:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, schema: str | None = None) -> None:
+        self.schema = schema or settings.db_schema
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _q(self, table: str) -> str:
+        return f'"{self.schema}".{table}'
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS sessions (
+        with connect() as conn:
+            conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._q("sessions")} (
                     id TEXT PRIMARY KEY,
                     title TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS messages (
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self._q("messages")} (
                     id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL REFERENCES {self._q("sessions")}(id),
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     sources TEXT,
                     trace_id TEXT,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(session_id) REFERENCES sessions(id)
-                );
-                CREATE INDEX IF NOT EXISTS ix_messages_session
-                ON messages(session_id, created_at);
+                    created_at TEXT NOT NULL
+                )
                 """
             )
+            conn.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS ix_ai_customer_messages_session
+                ON {self._q("messages")}(session_id, created_at)
+                """
+            )
+            conn.commit()
 
     def create_session(self, title: str = "新会话") -> str:
         sid = str(uuid.uuid4())
         now = _utc_now()
-        with self._connect() as conn:
+        with connect() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                f"INSERT INTO {self._q('sessions')} (id, title, created_at, updated_at) "
+                f"VALUES (%s, %s, %s, %s)",
                 (sid, title, now, now),
             )
+            conn.commit()
         return sid
 
     def list_sessions(self, limit: int = 50) -> list[dict]:
-        with self._connect() as conn:
+        with connect() as conn:
             rows = conn.execute(
-                "SELECT id, title, created_at, updated_at FROM sessions "
-                "ORDER BY updated_at DESC LIMIT ?",
+                f"SELECT id, title, created_at, updated_at FROM {self._q('sessions')} "
+                f"ORDER BY updated_at DESC LIMIT %s",
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -92,25 +105,27 @@ class ChatStore:
     ) -> str:
         mid = str(uuid.uuid4())
         now = _utc_now()
-        with self._connect() as conn:
+        with connect() as conn:
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, sources, trace_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO {self._q('messages')} "
+                f"(id, session_id, role, content, sources, trace_id, created_at) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (mid, session_id, role, content, sources, trace_id, now),
             )
             conn.execute(
-                "UPDATE sessions SET updated_at = ?, title = CASE "
-                "WHEN title = '新会话' AND ? = 'user' THEN substr(?, 1, 40) ELSE title END "
-                "WHERE id = ?",
+                f"UPDATE {self._q('sessions')} SET updated_at = %s, title = CASE "
+                f"WHEN title = '新会话' AND %s = 'user' THEN left(%s, 40) ELSE title END "
+                f"WHERE id = %s",
                 (now, role, content, session_id),
             )
+            conn.commit()
         return mid
 
     def list_messages(self, session_id: str) -> list[Message]:
-        with self._connect() as conn:
+        with connect() as conn:
             rows = conn.execute(
-                "SELECT id, session_id, role, content, sources, trace_id, created_at "
-                "FROM messages WHERE session_id = ? ORDER BY created_at ASC",
+                f"SELECT id, session_id, role, content, sources, trace_id, created_at "
+                f"FROM {self._q('messages')} WHERE session_id = %s ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
         return [

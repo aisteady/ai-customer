@@ -4,19 +4,27 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-.env
 .python-version
 
-# Local data & IDE
+# 密钥与本地数据
+.env
 data/*.db
 data/*.db-journal
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE / OS
 .idea/
 .vscode/
 *.swp
 .DS_Store
+Thumbs.db
 
 # Streamlit / caches
 .streamlit/secrets.toml
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/

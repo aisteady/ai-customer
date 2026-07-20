@@ -2,7 +2,9 @@
 AI 客服 — Streamlit 主界面
 ==========================
 
-运行：
+只负责展示与会话态；真正问答走 service.CustomerService.ask()。
+
+运行（仓库根）：
   uv run streamlit run models/ai_customer/app.py
 """
 

@@ -1,5 +1,10 @@
 """
-AI 客服 — DashScope LLM
+AI 客服 — DashScope LLM（RAG 的「G」）
+======================================
+
+只负责组 messages 并调用通义千问。
+system_prompt 由 service.resolve_system_prompt 注入（可来自中台项目配置）。
+用户消息里会附带【知识库片段】，约束模型依据片段作答。
 """
 
 from __future__ import annotations

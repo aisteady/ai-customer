@@ -1,5 +1,14 @@
 """
-AI 客服 — MCP 知识库召回（RAG）
+AI 客服 — MCP 知识库召回（RAG 的「R」）
+======================================
+
+职责：
+1. 调 MCP 工具 search_documents（带 project_id / top_k / threshold）
+2. 把中台返回的「文本列表」解析成 RetrievedChunk
+3. 拼成给 LLM 的 context 字符串
+
+注意：解析依赖 tools.search_documents 的固定输出格式；
+若中台改了文本模板，这里的正则也要一起改。
 """
 
 from __future__ import annotations
@@ -89,6 +98,7 @@ class RagRetriever:
         self.threshold = threshold
 
     def retrieve(self, query: str) -> RetrievalResult:
+        """一次召回：生成/透传 trace_id → call_tool → 解析 → 拼 context。"""
         params: dict = {
             "query": query,
             "top_k": self.top_k,

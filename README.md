@@ -1,7 +1,7 @@
 # AI Customer Service（智能客服）
 
 基于 **RAG（检索增强生成）** 的企业知识库智能客服应用。  
-通过 **MCP（Model Context Protocol）** 对接上游 AI 数据中台的混合检索能力，再调用 **通义千问（DashScope）** 生成有依据的客服回答；本地用 SQLite 持久化多轮会话。
+通过 **MCP（Model Context Protocol）** 对接上游 AI 数据中台的混合检索能力，再调用 **通义千问（DashScope）** 生成有依据的客服回答；会话写入 **PostgreSQL**（独立 schema，不落项目目录文件）。
 
 > 本目录可整体拷贝为独立仓库使用，不依赖中台源码，仅依赖其已启动的 MCP / API 服务。
 
@@ -37,7 +37,7 @@
 | **全链路可观测** | 每次召回携带 `trace_id`，可回中台「链路追踪」还原 MCP/HTTP/检索耗时 |
 | **降级与容错** | 无 API Key、召回失败、LLM 失败时仍可返回可用结果，避免白屏崩溃 |
 | **双入口** | Streamlit Web 聊天 + CLI 终端多轮，同一套 `CustomerService` 编排层 |
-| **本地会话存储** | SQLite 存 sessions / messages（含 sources、trace_id），与中台 schema 解耦 |
+| **会话存储** | PostgreSQL schema `ai_customer`（sessions / messages），与中台知识库表隔离 |
 
 ---
 
@@ -63,13 +63,14 @@
 | 协议层 | 官方 MCP Streamable HTTP 客户端 | `MCP_URL` + Bearer 调用 tools |
 | 检索层 | 上游 AI 数据中台 | 混合检索、项目 Prompt、链路追踪 |
 | 生成层 | 阿里云 DashScope（Qwen） | 对话式生成客服话术 |
-| 存储层 | SQLite | 本地会话与消息（含引用 JSON） |
+| 存储层 | PostgreSQL | 会话与消息（含引用 JSON）；默认 schema=`ai_customer` |
 | 配置 | python-dotenv | 本目录 `.env` + 可选继承中台根 `.env` |
 
 **本应用直接依赖（运行时）：**
 
 - `streamlit`、`python-dotenv`、`dashscope`、`requests`（经中台 MCP 间接使用）
-- 标准库：`socket`、`sqlite3`、`json`、`uuid` 等
+- `psycopg`（会话库）
+- 标准库：`json`、`uuid` 等
 
 ---
 
@@ -88,7 +89,8 @@
 │         ┌────────────┼────────────┬────────────┐           │
 │         ▼            ▼            ▼            ▼           │
 │      rag.py       llm.py     prompt 缓存    store.py       │
-│   MCP 召回     DashScope    get_project_   SQLite 会话     │
+│   MCP 召回     DashScope    get_project_   PostgreSQL      │
+│                            prompt         会话 schema      │
 │                            prompt                         │
 │         └────────────┬──────────────────────────────────┘  │
 │                      ▼                                     │
@@ -130,7 +132,7 @@
 
 - Streamlit：新建 / 切换历史会话，消息区展示回答、`trace_id`、知识库引用折叠面板；
 - CLI：同一会话内维护 history，控制台打印引用摘要；
-- SQLite：`sessions` + `messages`（`sources`、`trace_id` 字段便于复盘）。
+- PostgreSQL：`ai_customer.sessions` + `ai_customer.messages`（`sources`、`trace_id` 便于复盘）。
 
 ### 5.4 降级策略
 
@@ -153,7 +155,7 @@
 ```text
 用户问题
    │
-   ├─① persist：写入 SQLite（user）
+   ├─① persist：写入 PostgreSQL（user）
    │
    ├─② RagRetriever.retrieve
    │     · MCP tools/call → search_documents
@@ -166,7 +168,7 @@
    ├─④ DashScopeChat.generate
    │     · system + 近期 history + 知识库片段 + 用户问题
    │
-   └─⑤ persist：写入 SQLite（assistant + sources + trace_id）
+   └─⑤ persist：写入 PostgreSQL（assistant + sources + trace_id）
          · UI 渲染回答与引用
 ```
 
@@ -193,7 +195,8 @@ ai_customer/
 ├── rag.py              # 召回与结果解析
 ├── llm.py              # DashScope 生成封装
 ├── service.py          # 业务编排（核心）
-├── store.py            # SQLite 会话存储
+├── store.py            # PostgreSQL 会话存储
+├── db.py               # DSN / 连接
 └── data/
     ├── .gitkeep
     └── chat.db         # 运行后生成（默认路径）
@@ -205,7 +208,8 @@ ai_customer/
 | `rag.py` | 工具调用参数组装、文本结果正则解析、context 拼装 | RAG 中「检索结果结构化」 |
 | `llm.py` | messages 组装、DashScope 调用、异常统一为 `LlmError` | 与模型厂商 SDK 解耦 |
 | `service.py` | 唯一业务入口 `ask()`；Prompt 缓存；降级分支 | 编排层 / 防腐层 |
-| `store.py` | 轻量会话库，无 ORM 依赖 | 何时用 SQLite 足够 |
+| `store.py` | 会话库（独立 schema） | 与中台 public 表隔离 |
+| `db.py` | 复用中台 DB_* | 不在项目目录落库文件 |
 | `app.py` | 状态管理、历史会话、引用 UI | Streamlit 会话态 |
 
 ---
@@ -231,7 +235,8 @@ cp .env.example .env
 | `LLM_MODEL` | 否 | 如 `qwen-plus` / `qwen-turbo` | `qwen-plus` |
 | `TOP_K` | 否 | 召回条数 | `5` |
 | `SEARCH_THRESHOLD` | 否 | 向量相似度阈值 | `0.45` |
-| `SQLITE_PATH` | 否 | 相对本目录的库路径 | `data/chat.db` |
+| `APP_DB_SCHEMA` | 否 | 会话表所在 schema | `ai_customer` |
+| `DB_HOST` / `DB_*` | 否 | 继承中台根 `.env` | — |
 
 配置加载顺序（`config.py`）：
 
@@ -308,7 +313,7 @@ uv run python models/ai_customer/demo.py --tool search --query "请假流程"
 | 混合检索、权限、租户隔离 | 中台 | 通过 `project_id` + MCP 鉴权 |
 | 系统提示词 CRUD | 中台 UI/API | 客服只读拉取 |
 | 链路追踪存储与查询 | 中台 | 客服只展示 `trace_id` |
-| 对话 UI、会话历史 | **本项目** | 本地 SQLite |
+| 对话 UI、会话历史 | **本项目** | PostgreSQL `ai_customer` schema |
 | LLM 调用与降级策略 | **本项目** | DashScope |
 
 这种拆分便于简历中强调：**「上层 AI 应用」与「企业知识中台」的分层架构**。
@@ -350,11 +355,11 @@ uv run python models/ai_customer/demo.py --tool search --query "请假流程"
 
 - 设计并实现 RAG 问答编排层：检索解析、上下文拼装、LLM 生成、引用与 `trace_id` 回传一体化；
 - 实现 MCP TCP 客户端，解耦「客服应用」与「数据中台」，通过标准化工具调用完成检索与 Prompt 拉取；
-- 使用 Streamlit 搭建多会话客服界面，SQLite 持久化历史消息与知识库引用；
+- 使用 Streamlit 搭建多会话客服界面，PostgreSQL 持久化历史消息与知识库引用；
 - 落地降级策略（无 Key / 召回失败 / 生成失败）与 Prompt 短缓存，提升演示与联调稳定性；
 - 对接中台混合检索与全链路追踪，支持问题排查与效果复盘。
 
-**关键词：** Python · RAG · MCP · Streamlit · DashScope/Qwen · SQLite · 混合检索 · 可观测性 · 微服务解耦
+**关键词：** Python · RAG · MCP · Streamlit · DashScope/Qwen · PostgreSQL · 混合检索 · 可观测性 · 微服务解耦
 
 ---
 

@@ -1,11 +1,18 @@
 """
-AI 客服 — 官方 MCP Streamable HTTP 客户端
-==========================================
+AI 客服 — MCP 客户端
+====================
 
-连接数据中台 MCP（默认 http://127.0.0.1:8765/mcp），
-使用官方 MCP Python SDK 的 Streamable HTTP 传输。
+客服不直连数据库，只通过 MCP 调中台工具。
 
-兼容：若 MCP_TRANSPORT=tcp，则回退到遗留 TCP（过渡期）。
+默认传输：官方 Streamable HTTP
+  MCP_URL=http://127.0.0.1:8765/mcp
+  请求头 Authorization: Bearer {MCP_CLIENT_TOKEN}
+
+过渡：MCP_TRANSPORT=tcp 时用遗留 TCP（中台需 MCP_ENABLE_TCP=true）。
+
+对外统一接口（编排层只认这两个方法）：
+  client.list_tools()
+  client.call_tool(name, parameters, trace_id=...)
 """
 
 from __future__ import annotations
@@ -17,14 +24,16 @@ from typing import Any
 
 
 class MCPClientError(Exception):
-    """MCP 调用失败（网络、协议或服务端 error）。"""
+    """网络不通、鉴权失败、协议错误或工具执行失败时抛出。"""
 
 
 def _extract_tool_text(result: Any) -> str:
-    """从官方 call_tool 结果中取出文本。"""
+    """
+    官方 SDK 的 call_tool 返回 CallToolResult，正文在 content[].text。
+    这里抽成纯字符串，与旧 TCP「直接返回文本」对齐，方便 rag/service 复用。
+    """
     if result is None:
         return ""
-    # CallToolResult: content list of TextContent
     content = getattr(result, "content", None)
     if content is None and isinstance(result, dict):
         content = result.get("content")
@@ -45,7 +54,12 @@ def _extract_tool_text(result: Any) -> str:
 
 
 class MCPHttpClient:
-    """官方 Streamable HTTP MCP 客户端（同步封装）。"""
+    """
+    官方 Streamable HTTP 客户端的同步封装。
+
+    SDK 本身是 async 的；客服 UI/CLI 多为同步调用，故内部 asyncio.run。
+    注意：不要在已有事件循环里再调 call_tool（Streamlit 脚本环境一般 OK）。
+    """
 
     def __init__(
         self,
@@ -77,6 +91,7 @@ class MCPHttpClient:
 
         headers = self._headers(trace_id)
         try:
+            # 每次调用新建会话：简单可靠；高并发可再做连接池优化
             async with streamablehttp_client(
                 self.url,
                 headers=headers or None,
@@ -136,8 +151,8 @@ class MCPHttpClient:
         except Exception as exc:
             raise MCPClientError(f"MCP call_tool 失败: {exc}") from exc
 
-    # 兼容旧接口名
     def call(self, method: str, params: dict | None = None, *, trace_id: str | None = None) -> Any:
+        """兼容旧 demo 里 method=tools/list|tools/call 的写法。"""
         if method == "tools/list":
             return self.list_tools()
         if method == "tools/call":
@@ -147,7 +162,7 @@ class MCPHttpClient:
 
 
 class MCPTcpClient:
-    """遗留 TCP 客户端（过渡期 MCP_TRANSPORT=tcp 时使用）。"""
+    """遗留 TCP 客户端：一行 JSON 协议。仅 MCP_TRANSPORT=tcp 时使用。"""
 
     def __init__(
         self,
@@ -232,7 +247,7 @@ class MCPTcpClient:
 
 
 def build_mcp_client():
-    """按配置创建 HTTP 或 TCP 客户端。"""
+    """工厂：读 config.settings，返回 HTTP 或 TCP 客户端。"""
     from config import settings
 
     transport = (settings.mcp_transport or "http").lower()

@@ -1,5 +1,17 @@
 """
-AI 客服 — 问答编排（召回 + 生成）
+AI 客服 — 问答编排（核心业务入口）
+================================
+
+读代码顺序建议：ask() → retrieve → resolve_system_prompt → llm.generate → store
+
+流水线：
+  1. （可选）SQLite 记用户消息
+  2. RagRetriever：MCP search_documents → 拼 context
+  3. 拉取项目 system 提示词（60s 缓存）
+  4. DashScope 生成；失败则降级返回召回原文
+  5. （可选）SQLite 记助手消息 + sources + trace_id
+
+本类不关心 UI；app.py / cli_chat.py 都只调 ask()。
 """
 
 from __future__ import annotations
@@ -19,10 +31,12 @@ _PROMPT_CACHE_TTL_SEC = 60.0
 
 @dataclass
 class Answer:
+    """一次问答的完整结果，供 UI 渲染。"""
+
     question: str
     answer: str
     retrieval: RetrievalResult
-    degraded: bool = False
+    degraded: bool = False  # True=走了降级分支（无 Key / 召回失败 / LLM 失败）
     error: str | None = None
     sources_summary: list[dict] = field(default_factory=list)
     session_id: str | None = None
@@ -42,7 +56,8 @@ class CustomerService:
             api_key=settings.dashscope_api_key,
             model=settings.llm_model,
         )
-        self.store = ChatStore(settings.sqlite_path)
+        self.store = ChatStore()
+        # (monotonic_ts, prompt_text)
         self._prompt_cache: tuple[float, str] | None = None
 
     def resolve_system_prompt(self) -> str:
@@ -65,6 +80,7 @@ class CustomerService:
                 if content:
                     text = content
         except (MCPClientError, json.JSONDecodeError, TypeError, ValueError):
+            # 中台不可用时仍要能答（用默认人设）
             pass
 
         self._prompt_cache = (now, text)
@@ -78,6 +94,12 @@ class CustomerService:
         history: list[tuple[str, str]] | None = None,
         persist: bool = True,
     ) -> Answer:
+        """
+        主入口。
+
+        history: [(role, content), ...]，role 为 user/assistant，供多轮。
+        persist: False 时不写 SQLite（适合单次探测）。
+        """
         question = (question or "").strip()
         if not question:
             raise ValueError("问题不能为空")
