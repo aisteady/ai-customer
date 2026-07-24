@@ -1,14 +1,20 @@
 """
-AI 客服 — MCP 知识库召回（RAG 的「R」）
+MCP 知识库召回（rag.py）— RAG 的「R」
 ======================================
 
-职责：
-1. 调 MCP 工具 search_documents（带 project_id / top_k / threshold）
-2. 把中台返回的「文本列表」解析成 RetrievedChunk
-3. 拼成给 LLM 的 context 字符串
+学习要点
+--------
+客服不直连向量库，只调中台 MCP `search_documents`。
+本模块负责：发检索 → 解析文本列表 → 拼给 LLM 的 context。
 
-注意：解析依赖 tools.search_documents 的固定输出格式；
-若中台改了文本模板，这里的正则也要一起改。
+谁在用：
+  tools.CustomerTools.rag_search  → 客户 Agent / 员工路径共用
+  （员工节点 employee_answer 经 tools 间接调用）
+
+注意：parse_search_result 依赖中台返回的固定文本模板；
+中台改输出格式时，这里的 `_ITEM_RE` 要一起改。
+
+trace_id：每次召回生成或透传，便于中台「链路追踪」还原耗时。
 """
 
 from __future__ import annotations

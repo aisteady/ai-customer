@@ -1,18 +1,23 @@
 """
-AI 客服 — MCP 客户端
-====================
+MCP 客户端（mcp_client.py）
+===========================
 
-客服不直连数据库，只通过 MCP 调中台工具。
+学习要点
+--------
+客服**不直连**业务库 / 向量库，只通过 MCP 调中台工具，例如：
+  search_documents / get_project_prompt / chat_completion
 
 默认传输：官方 Streamable HTTP
   MCP_URL=http://127.0.0.1:8765/mcp
-  请求头 Authorization: Bearer {MCP_CLIENT_TOKEN}
+  Authorization: Bearer {MCP_CLIENT_TOKEN}   ← 网关密钥，不是项目 JWT
 
 过渡：MCP_TRANSPORT=tcp 时用遗留 TCP（中台需 MCP_ENABLE_TCP=true）。
 
-对外统一接口（编排层只认这两个方法）：
+对外统一接口（rag / llm / service 只认这两个）：
   client.list_tools()
   client.call_tool(name, parameters, trace_id=...)
+
+工厂：build_mcp_client() 读 config.settings 返回 HTTP 或 TCP 实现。
 """
 
 from __future__ import annotations

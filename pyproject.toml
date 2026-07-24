@@ -1,17 +1,20 @@
 [project]
 name = "ai-customer"
-version = "1.2.0"
-description = "企业知识库智能客服：官方 MCP Streamable HTTP + DashScope RAG，会话存 PostgreSQL"
+version = "2.0.0"
+description = "智能客服：意图分流 + Agent/双 Loop/Harness；MCP RAG 与 stub 工艺推荐"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+    "langgraph>=0.2.0",
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary]>=3.1.0",
+    "psycopg-pool>=3.2.0",
     "streamlit>=1.30.0",
+    "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
-    "dashscope>=1.20.0",
     "requests>=2.31.0",
     "mcp>=1.9.0",
     "httpx>=0.27.0",
-    "psycopg[binary]>=3.1.0",
 ]
 
 [build-system]
@@ -23,13 +26,16 @@ py-modules = [
     "app",
     "cli_chat",
     "config",
+    "crm",
     "db",
-    "demo",
+    "harness",
     "llm",
     "mcp_client",
+    "prompts",
     "rag",
     "service",
     "store",
+    "tools",
 ]
 
 [tool.uv]

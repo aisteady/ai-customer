@@ -1,369 +1,312 @@
-# AI Customer Service（智能客服）
+# 智能客服（ai_customer）
 
-基于 **RAG（检索增强生成）** 的企业知识库智能客服应用。  
-通过 **MCP（Model Context Protocol）** 对接上游 AI 数据中台的混合检索能力，再调用 **通义千问（DashScope）** 生成有依据的客服回答；会话写入 **PostgreSQL**（独立 schema，不落项目目录文件）。
+> **一句话**：面向企业的对话式 AI 客服。  
+> 内部员工问制度/知识库 → 直接检索回答；  
+> 外部客户问产品、要看图、要工艺选型、要留资报价 → 由 Agent 自动选工具、追问补全、再回答。
 
-> 本目录可整体拷贝为独立仓库使用，不依赖中台源码，仅依赖其已启动的 MCP / API 服务。
+本应用 **不持有** 通义 API Key，检索与大模型一律走 **AI 数据中台的 MCP**。  
+工艺方案走同仓 **工艺选型** 的 HTTP 接口；图片/视频走中台 MCP `search_media`。
+
+如果你是零基础，建议顺序：先读本文 → 按「第一次跑起来」操作 → 再需要时看文末「术语小词典」和 `FLOW_ANALYSIS.md`。
 
 ---
 
 ## 目录
 
-1. [项目亮点（适合写进简历）](#1-项目亮点适合写进简历)
-2. [业务背景与目标](#2-业务背景与目标)
-3. [技术栈](#3-技术栈)
-4. [系统架构](#4-系统架构)
-5. [核心能力](#5-核心能力)
-6. [问答流水线](#6-问答流水线)
-7. [目录与模块说明](#7-目录与模块说明)
-8. [环境配置](#8-环境配置)
-9. [快速开始](#9-快速开始)
-10. [运行模式说明](#10-运行模式说明)
-11. [与数据中台的协作边界](#11-与数据中台的协作边界)
-12. [扩展与二次开发建议](#12-扩展与二次开发建议)
-13. [常见问题](#13-常见问题)
-14. [简历描述参考（可直接改写）](#14-简历描述参考可直接改写)
+1. [它能干什么（场景举例）](#1-它能干什么场景举例)
+2. [和中台 / 其它项目的关系](#2-和中台--其它项目的关系)
+3. [两种用户，两条路径](#3-两种用户两条路径)
+4. [客户路径里有哪些「工具」](#4-客户路径里有哪些工具)
+5. [对话是怎么一步步跑的](#5-对话是怎么一步步跑的)
+6. [第一次跑起来](#6-第一次跑起来)
+7. [环境变量说明](#7-环境变量说明)
+8. [界面怎么用](#8-界面怎么用)
+9. [目录结构（看代码时用）](#9-目录结构看代码时用)
+10. [常见问题](#10-常见问题)
+11. [术语小词典](#11-术语小词典)
+12. [更深入的文档](#12-更深入的文档)
 
 ---
 
-## 1. 项目亮点（适合写进简历）
+## 1. 它能干什么（场景举例）
 
-| 亮点 | 说明 |
-|------|------|
-| **RAG 客服闭环** | 检索 → 组上下文 → LLM 生成 → 引用展示 → 会话落库，完整可演示 |
-| **MCP 协议解耦** | 客服作为「外部 AI 应用」，经 TCP JSON-RPC 调中台工具，不直连业务库 |
-| **混合检索消费** | 调用中台 `search_documents`（向量 + 关键词 / RRF），而非自建向量库 |
-| **可配置系统提示词** | 按 `project_id` 从中台拉取 `system` Prompt（短缓存），支持多租户话术 |
-| **全链路可观测** | 每次召回携带 `trace_id`，可回中台「链路追踪」还原 MCP/HTTP/检索耗时 |
-| **降级与容错** | 无 API Key、召回失败、LLM 失败时仍可返回可用结果，避免白屏崩溃 |
-| **双入口** | Streamlit Web 聊天 + CLI 终端多轮，同一套 `CustomerService` 编排层 |
-| **会话存储** | PostgreSQL schema `ai_customer`（sessions / messages），与中台知识库表隔离 |
+| 用户说… | 系统大致会… |
+|---------|-------------|
+| 「报销要找谁审批？」（员工） | 检索内部知识库，按文档片段回答 |
+| 「立磨有什么优势？」（客户） | 检索产品文档，组织话术回答 |
+| 「看看立磨的图片」 | 强制调用素材检索，命中后聊天窗口直接展示图片 |
+| 「石英砂要磨到 325 目…」 | 调工艺选型接口；缺参数就追问；齐了就出配置方案 |
+| 「这个方案要报价」 | 收集姓名 + 手机/邮箱，写入 CRM 线索表 |
 
----
+**不会做的事（设计边界）**：
 
-## 2. 业务背景与目标
-
-企业文档（制度、FAQ、产品说明）往往分散在 PDF / Word / 表格中。传统客服依赖人工翻资料，响应慢且口径不一。
-
-本项目目标：
-
-1. **用户用自然语言提问**，系统从已入库知识库召回相关片段；
-2. **大模型仅依据召回内容作答**，减少幻觉，并展示引用来源；
-3. **客服应用与知识中台分离**：中台管文档/向量/权限，客服管对话体验与会话；
-4. **可按项目（租户）切换知识范围与系统提示词**，便于多业务线复用同一客服壳。
+- 不自己发明价格、交期、合同条款  
+- 不直连向量数据库（一律 MCP）  
+- 不在客服里维护工艺 BOM 规则（那是 `ai_quotation`）  
+- 不替代公司完整 CRM 产品（目前是线索落库，可后续对接）
 
 ---
 
-## 3. 技术栈
-
-| 层级 | 技术 | 用途 |
-|------|------|------|
-| 交互层 | Streamlit / CLI | Web 聊天界面、终端调试 |
-| 编排层 | Python 3.10+ | `CustomerService` 串联召回、Prompt、生成、落库 |
-| 协议层 | 官方 MCP Streamable HTTP 客户端 | `MCP_URL` + Bearer 调用 tools |
-| 检索层 | 上游 AI 数据中台 | 混合检索、项目 Prompt、链路追踪 |
-| 生成层 | 阿里云 DashScope（Qwen） | 对话式生成客服话术 |
-| 存储层 | PostgreSQL | 会话与消息（含引用 JSON）；默认 schema=`ai_customer` |
-| 配置 | python-dotenv | 本目录 `.env` + 可选继承中台根 `.env` |
-
-**本应用直接依赖（运行时）：**
-
-- `streamlit`、`python-dotenv`、`dashscope`、`requests`（经中台 MCP 间接使用）
-- `psycopg`（会话库）
-- 标准库：`json`、`uuid` 等
-
----
-
-## 4. 系统架构
+## 2. 和中台 / 其它项目的关系
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                     AI Customer Service                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  app.py      │  │ cli_chat.py  │  │ demo.py（连通性） │  │
-│  │  Streamlit   │  │  终端多轮    │  │                  │  │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
-│         └────────────┬────┴───────────────────┘            │
-│                      ▼                                     │
-│              service.py（编排）                             │
-│         ┌────────────┼────────────┬────────────┐           │
-│         ▼            ▼            ▼            ▼           │
-│      rag.py       llm.py     prompt 缓存    store.py       │
-│   MCP 召回     DashScope    get_project_   PostgreSQL      │
-│                            prompt         会话 schema      │
-│                            prompt                         │
-│         └────────────┬──────────────────────────────────┘  │
-│                      ▼                                     │
-│              mcp_client.py                                 │
-│           Streamable HTTP …/mcp + Bearer                   │
-└──────────────────────┬──────────────────────────────────────┘
-                       │  search_documents / get_project_prompt …
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│              AI 数据中台（独立服务，需先启动）                 │
-│  MCP Streamable HTTP → FastAPI → PostgreSQL + pgvector      │
-│  文档入库 / 混合检索 / 项目 Prompt / 链路追踪                 │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────┐
+│  你打开的客服页面（Streamlit） │
+│  models/ai_customer/app.py   │
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐
+│  CustomerService + LangGraph │  ← 本目录核心：编排对话
+└───────┬───────────┬─────────┘
+        │           │
+        │ MCP       │ HTTP
+        ▼           ▼
+   中台 :8765    工艺选型 :8510
+   搜文档/素材     /api/v1/recommend
+   调大模型
 ```
 
-**设计原则：**
+| 依赖 | 是否必须 | 说明 |
+|------|----------|------|
+| 中台 API + MCP | **必须** | 没有 MCP，客服无法检索和调模型 |
+| PostgreSQL | **强烈建议** | 存会话、消息、追问断点、CRM；开发可临时内存断点 |
+| `ai_quotation` 的 `api.py` | 可选 | 不做工艺选型可先不启；工具会降级/提示 |
+| 素材已发布 | 可选 | 要测发图，需在中台「素材管理」发布过素材 |
 
-- **关注点分离**：UI 不直接调 LLM/MCP，统一走 `CustomerService.ask()`；
-- **协议边界清晰**：客服不持有 DB 连接，知识与权限由中台保证；
-- **可独立演进**：换 UI（FastAPI + 前端）或换模型，只需改薄封装层。
-
----
-
-## 5. 核心能力
-
-### 5.1 知识库问答（RAG）
-
-1. 用户提问 → 调用 MCP `search_documents`（可带 `project_id` / `top_k` / `threshold`）；
-2. 解析返回文本为结构化片段（文件名、相似度、正文、召回来源标签）；
-3. 拼装「知识库片段」上下文，交给 LLM，并附带系统提示词约束「只依据片段作答」。
-
-### 5.2 项目级系统提示词
-
-- 中台按 `project_id` 维护 `system` Prompt；
-- 客服通过 MCP `get_project_prompt` 拉取，**本地缓存约 60 秒**；
-- 拉取失败则回退到内置默认提示词，保证服务可用。
-
-### 5.3 多轮会话与引用展示
-
-- Streamlit：新建 / 切换历史会话，消息区展示回答、`trace_id`、知识库引用折叠面板；
-- CLI：同一会话内维护 history，控制台打印引用摘要；
-- PostgreSQL：`ai_customer.sessions` + `ai_customer.messages`（`sources`、`trace_id` 便于复盘）。
-
-### 5.4 降级策略
-
-| 场景 | 行为 |
-|------|------|
-| 未配置 `DASHSCOPE_API_KEY` | 不调用 LLM，直接展示召回片段说明 |
-| MCP 召回失败 | 返回明确错误文案，会话仍可继续 |
-| LLM 调用失败 | 返回错误说明 + 原始召回上下文 |
-| Prompt 拉取失败 | 使用本地默认 system prompt |
-
-### 5.5 可观测性
-
-- 召回时生成/透传 `trace_id`；
-- 回答旁展示 `trace_id`，可在中台「链路追踪」页查看 MCP → API → 检索各 span。
+仓库总览见：[../../README.md](../../README.md)
 
 ---
 
-## 6. 问答流水线
+## 3. 两种用户，两条路径
+
+系统会先判断（或由你在侧栏指定）提问者是 **员工** 还是 **客户**：
 
 ```text
-用户问题
+用户提问
    │
-   ├─① persist：写入 PostgreSQL（user）
+   ▼
+意图分流 route_intent
+   ├─ employee（员工）──► 只做知识库检索 ──► 直接回答 ──► 结束
+   │                     （短、稳、可预期）
    │
-   ├─② RagRetriever.retrieve
-   │     · MCP tools/call → search_documents
-   │     · 解析 chunks → 拼接 context
-   │     · 记录 trace_id
-   │
-   ├─③ resolve_system_prompt（缓存）
-   │     · MCP get_project_prompt 或默认文案
-   │
-   ├─④ DashScopeChat.generate
-   │     · system + 近期 history + 知识库片段 + 用户问题
-   │
-   └─⑤ persist：写入 PostgreSQL（assistant + sources + trace_id）
-         · UI 渲染回答与引用
+   └─ customer（客户）──► Agent 规划
+                            ├─ 信息不够 → 追问 Clarify（可多轮）
+                            └─ 信息够了 → 调工具 → 质检
+                                  ├─ 满意 → 组织答复（可能带图）
+                                  │         若有配置方案 → 问是否报价 → 留资
+                                  └─ 不满意 → 再试工具（有次数上限）
+                                        └─ 用尽 → Fallback 兜底 / 建议转人工
 ```
 
-**防幻觉策略（提示词约束）：**
+为什么要分两条？
 
-- 只依据【知识库片段】回答；
-- 不足时明确说明「根据现有知识库无法确定」；
-- 简洁分点、可引用文件名。
+- **员工 FAQ** 要稳：少花样，严格依据知识库  
+- **客户咨询** 要能动：可能要组合「搜文档 + 搜图 + 工艺推荐」
 
 ---
 
-## 7. 目录与模块说明
+## 4. 客户路径里有哪些「工具」
 
-```text
-ai_customer/
-├── README.md           # 本说明
-├── .env.example        # 环境变量模板
-├── .env                # 本地配置（勿提交密钥）
-├── app.py              # Streamlit 客服主界面
-├── cli_chat.py         # 终端多轮问答
-├── demo.py             # MCP 连通性 / 工具自检
-├── config.py           # Settings 加载
-├── mcp_client.py       # MCP TCP 客户端封装
-├── rag.py              # 召回与结果解析
-├── llm.py              # DashScope 生成封装
-├── service.py          # 业务编排（核心）
-├── store.py            # PostgreSQL 会话存储
-├── db.py               # DSN / 连接
-└── data/
-    ├── .gitkeep
-    └── chat.db         # 运行后生成（默认路径）
-```
+Agent 不会「想干什么就干什么」，只能从下面三个工具里选：
 
-| 模块 | 职责 | 面试可讲点 |
-|------|------|------------|
-| `mcp_client.py` | 一行一 JSON 的 TCP 客户端；错误码与 `trace_id` 解析 | 协议设计、超时与连接错误处理 |
-| `rag.py` | 工具调用参数组装、文本结果正则解析、context 拼装 | RAG 中「检索结果结构化」 |
-| `llm.py` | messages 组装、DashScope 调用、异常统一为 `LlmError` | 与模型厂商 SDK 解耦 |
-| `service.py` | 唯一业务入口 `ask()`；Prompt 缓存；降级分支 | 编排层 / 防腐层 |
-| `store.py` | 会话库（独立 schema） | 与中台 public 表隔离 |
-| `db.py` | 复用中台 DB_* | 不在项目目录落库文件 |
-| `app.py` | 状态管理、历史会话、引用 UI | Streamlit 会话态 |
+| 工具名 | 干什么 | 背后调用 |
+|--------|--------|----------|
+| `rag_search` | 搜文字知识库 | MCP `search_documents`（用 `PROJECT_ID`） |
+| `search_media` | 搜图片/视频 | MCP `search_media`（用 `MEDIA_PROJECT_ID`） |
+| `process_config_recommend` | 工艺配置推荐 | HTTP → `ai_quotation` `/api/v1/recommend` |
+
+**新手易错点**：
+
+- 文档项目 ID（`PROJECT_ID`）和素材项目 ID（`MEDIA_PROJECT_ID`）**可以不同**  
+- 用户说「看看」「发张图」时，系统会 **强制带上** `search_media`，避免 Agent 只搜文字  
+- 没搜到图时，回答 **不应** 假装「已经发图了」（提示词里有约束）
 
 ---
 
-## 8. 环境配置
+## 5. 对话是怎么一步步跑的
 
-复制模板并填写：
+用「客户要看立磨图片」举例：
+
+1. 你在页面输入：「看看立磨的图片」  
+2. 系统判定角色 = 客户  
+3. Agent 规划：工具里必须有 `search_media`（也可同时 `rag_search`）  
+4. 执行工具：MCP 去中台搜已发布素材  
+5. 质检：有命中 → 生成简短文字说明  
+6. 页面渲染：文字气泡 + 图片附件（签名 URL）  
+7. 全过程有 `trace_id`，方便在中台追踪里排查  
+
+用「工艺选型」举例：
+
+1. 用户描述需求，但缺「产量」等五要素之一  
+2. 工艺 API 返回 `ok=false` + `missing`  
+3. 客服进入 **Clarify**：只问缺的那几项（界面会出现待补充状态）  
+4. 你补充后，系统 **恢复同一条对话图**，再调一次推荐 API  
+5. 出方案后，可询问是否需要报价 → 收集联系方式 → 写入 `crm_leads`
+
+「追问中途关掉页面再打开」能续上，靠的是 LangGraph **Checkpoint**（断点存数据库）。
+
+---
+
+## 6. 第一次跑起来
+
+### 6.1 先启动中台（仓库根目录）
 
 ```bash
-cp .env.example .env
-```
-
-| 变量 | 必填 | 说明 | 默认 |
-|------|------|------|------|
-| `PROJECT_ID` | 是 | 中台项目 UUID，限定检索范围 | 空 |
-| `DASHSCOPE_API_KEY` | 问答生成时必填 | 通义 API Key；不填则仅召回降级 | 空 |
-| `MCP_TRANSPORT` | 否 | `http`（默认）或遗留 `tcp` | `http` |
-| `MCP_URL` | HTTP 时 | Streamable HTTP 地址 | `http://127.0.0.1:8765/mcp` |
-| `MCP_CLIENT_TOKEN` | 视中台而定 | Bearer，与中台 `MCP_CLIENT_TOKEN` 一致 | 空 |
-| `MCP_HOST` / `MCP_PORT` | TCP 时 | 遗留 TCP 地址（中台 `MCP_ENABLE_TCP`） | `127.0.0.1` / `8766` |
-| `MCP_TCP_SECRET` | TCP 时 | 遗留 TCP auth_token | 空 |
-| `MCP_TIMEOUT` | 否 | 超时（秒） | `120` |
-| `LLM_MODEL` | 否 | 如 `qwen-plus` / `qwen-turbo` | `qwen-plus` |
-| `TOP_K` | 否 | 召回条数 | `5` |
-| `SEARCH_THRESHOLD` | 否 | 向量相似度阈值 | `0.45` |
-| `APP_DB_SCHEMA` | 否 | 会话表所在 schema | `ai_customer` |
-| `DB_HOST` / `DB_*` | 否 | 继承中台根 `.env` | — |
-
-配置加载顺序（`config.py`）：
-
-1. 本目录 `.env`
-2. 若存在上两级仓库根 `.env`，**不覆盖**已有键（便于共用 `DASHSCOPE_API_KEY`）
-
----
-
-## 9. 快速开始
-
-### 9.1 前置：启动 AI 数据中台
-
-在中台仓库中（与本目录同 monorepo 时，在仓库根执行）：
-
-```bash
-# 终端 A：API
+# 终端 A/B/C
 uv run python start_api.py
-
-# 终端 B：MCP
+uv run python start_ui.py
 uv run python start_mcp.py
 ```
 
-确认：
+在运维台创建/确认：
 
-- 中台已配置 `MCP_API_KEY`，服务账号可访问目标项目；
-- 目标 `PROJECT_ID` 下已有 **processed** 状态文档；
-- （可选）在中台「提示词管理」为该项目配置 system Prompt。
+1. 有一个 **文档知识库项目**（记下 UUID → 填客服 `PROJECT_ID`）  
+2. （可选）有 **多模态素材项目**，并已上传、标注、**发布**至少一张图  
+3. `.env` 里 `MCP_CLIENT_TOKEN` 已设置（与客服保持一致）
 
-### 9.2 配置本应用
+### 6.2 （可选）启动工艺推荐 API
 
 ```bash
-cd models/ai_customer   # 或拷贝后的独立项目根目录
+cd models/ai_quotation
+uv sync
+uv run python api.py
+# 默认 http://127.0.0.1:8510
+```
+
+### 6.3 启动客服
+
+```bash
+cd models/ai_customer
 cp .env.example .env
-# 编辑 PROJECT_ID、DASHSCOPE_API_KEY、可选 MCP_TCP_SECRET
+# 编辑 .env：至少填 PROJECT_ID、MCP_CLIENT_TOKEN；要测图则确认 MEDIA_PROJECT_ID
+uv sync
+uv run streamlit run app.py
 ```
 
-### 9.3 启动客服
+浏览器打开 Streamlit 提示的地址（常见为 `http://localhost:8501`；若与中台 UI 端口冲突，按终端实际端口为准）。
 
-在**仓库根**（若仍在 monorepo）或本目录（需已安装依赖）：
+也可用命令行聊天：
 
 ```bash
-# Web UI
-uv run streamlit run models/ai_customer/app.py
-
-# 终端多轮
-uv run python models/ai_customer/cli_chat.py
-
-# 连通性自检
-uv run python models/ai_customer/demo.py --tool list
-uv run python models/ai_customer/demo.py --tool search --query "请假流程"
+uv run python cli_chat.py
 ```
 
-浏览器打开 Streamlit 提示的本地地址（默认 `http://localhost:8501`），即可开始问答。
+---
+
+## 7. 环境变量说明
+
+复制 `.env.example` 为 `.env`。常用项：
+
+| 变量 | 含义 | 示例 / 注意 |
+|------|------|-------------|
+| `PROJECT_ID` | 文档 RAG 用的中台项目 | 必填，UUID |
+| `MEDIA_PROJECT_ID` | 素材检索用的项目 | 默认可指向多模态素材中心 |
+| `MCP_URL` | MCP 地址 | `http://127.0.0.1:8765/mcp` |
+| `MCP_CLIENT_TOKEN` | 调 MCP 的密钥 | **必须与中台一致**；不是项目 SERVICE_TOKEN |
+| `TOP_K` / `SEARCH_THRESHOLD` | 文档检索条数与阈值 | 默认 5 / 0.45 |
+| `MEDIA_SEARCH_THRESHOLD` | 素材检索阈值 | 默认 0.25（可略宽） |
+| `MAX_TOOL_LOOPS` | 工具循环硬顶 | 默认 8；打满会 degraded 兜底 |
+| `MAX_CLARIFY_LOOPS` | 追问硬顶 | 默认 10 |
+| `APP_DB_SCHEMA` | 本应用表所在 schema | 默认 `ai_customer` |
+| `ALLOW_MEMORY_CHECKPOINT` | 无库时用内存断点 | 开发可 true；生产建议 false |
+| `PROCESS_CONFIG_URL` | 工艺 API | 默认 `http://127.0.0.1:8510` |
+| `PROCESS_CONFIG_TOKEN` | 工艺 API 鉴权 | 与报价侧 `CUSTOMER_API_TOKEN` 一致（若启用） |
+| `LLM_MODEL` | 指定模型名 | 留空则用中台项目配置 |
+
+数据库：可填 `DATABASE_URL`，或不填而继承仓库根 `.env` 的 `DB_*`。
 
 ---
 
-## 10. 运行模式说明
+## 8. 界面怎么用
 
-| 模式 | 命令 | 适用场景 |
-|------|------|----------|
-| Web 客服 | `streamlit run app.py` | 演示、产品原型、多会话管理 |
-| CLI | `python cli_chat.py` | 快速调试、无浏览器环境 |
-| Demo | `python demo.py --tool …` | 只验证 MCP 工具，不走完整 RAG 生成 |
+侧栏常见项：
 
-`demo.py` 支持的工具示例：`list` / `search` / `stats` / `tables` 等，用于排查「客服无结果是检索问题还是生成问题」。
+- **角色**：自动识别 / 强制客户 / 强制员工  
+- **会话列表**：历史聊天；加载时会恢复 `thread_id`，以便继续未完成的追问  
+- **配置摘要**：当前 `PROJECT_ID`、素材项目、MCP 地址等（便于排错）
 
----
+主区域：
 
-## 11. 与数据中台的协作边界
-
-| 能力 | 归属 | 说明 |
-|------|------|------|
-| 文档上传、解析、向量化 | 中台 | 客服只读消费 |
-| 混合检索、权限、租户隔离 | 中台 | 通过 `project_id` + MCP 鉴权 |
-| 系统提示词 CRUD | 中台 UI/API | 客服只读拉取 |
-| 链路追踪存储与查询 | 中台 | 客服只展示 `trace_id` |
-| 对话 UI、会话历史 | **本项目** | PostgreSQL `ai_customer` schema |
-| LLM 调用与降级策略 | **本项目** | DashScope |
-
-这种拆分便于简历中强调：**「上层 AI 应用」与「企业知识中台」的分层架构**。
+- 输入问题发送  
+- 若系统在追问，按提示补充即可（不要当成全新无关问题乱开话题）  
+- 有素材命中时，气泡下方会显示图片/视频附件  
+- 底部可能显示 `角色 · tool×N · degraded` 与 `trace_id`
 
 ---
 
-## 12. 扩展与二次开发建议
+## 9. 目录结构（看代码时用）
 
-以下为合理演进方向（未全部实现，可作规划说明）：
+```text
+ai_customer/
+├── app.py              # Streamlit 界面（尽量不写业务分支）
+├── cli_chat.py         # 命令行聊天
+├── service.py          # 对外门面：ask / resume_clarify
+├── config.py           # 读 .env
+├── harness.py          # 轮数硬顶 + 审计事件
+├── graph/
+│   ├── build.py        # 组装状态机
+│   ├── nodes.py        # 各节点逻辑（意图、规划、工具、报价…）
+│   └── state.py        # 状态字段定义
+├── tools.py            # 三个工具的具体实现
+├── rag.py / media.py   # 文档检索 / 素材检索封装
+├── mcp_client.py       # 连接中台 MCP
+├── llm.py              # 经 MCP 调大模型
+├── crm.py              # 线索写入
+├── prompts.py          # 各节点提示词（改话术优先改这里）
+├── db.py / store.py    # 数据库与会话存储
+└── FLOW_ANALYSIS.md    # 流程深挖（进阶）
+```
 
-1. **HTTP 直连中台**：用项目 `service_token` 调 `/api/search/hybrid`，适合无 MCP 的部署；
-2. **流式输出**：DashScope stream + Streamlit `st.write_stream`；
-3. **评价反馈**：点赞/点踩写回中台，用于检索与 Prompt 迭代；
-4. **多 Agent**：工单创建、转人工，仍通过 MCP 工具扩展；
-5. **独立仓库化**：增加本目录 `pyproject.toml` / `requirements.txt`，与中台完全分离发布。
+设计原则（方便你改代码时不踩坑）：
 
----
-
-## 13. 常见问题
-
-| 现象 | 可能原因 | 处理 |
-|------|----------|------|
-| 无法连接 MCP | MCP 未启动 / 端口不对 | 确认 `start_mcp.py`，检查 `MCP_HOST`/`MCP_PORT` |
-| 搜索无结果 | 项目 ID 错、文档未处理完、阈值过高 | 核对 `PROJECT_ID`；文档 `status=processed`；下调 `SEARCH_THRESHOLD` |
-| 只召回不生成 | 未配 Key | 配置 `DASHSCOPE_API_KEY` |
-| MCP 返回 403/鉴权失败 | 中台 API Key / 服务账号权限不足 | 检查中台 `MCP_API_KEY`、账号是否可访问项目 |
-| 提示词不生效 | 缓存未过期 / 中台未保存 | 等待约 60s，或重启客服进程；确认中台已保存且为该 `project_id` |
-| `trace_id` 查不到 | 中台追踪未开或未重启 | 确认中台 API 已升级并重启 |
-
----
-
-## 14. 简历描述参考（可直接改写）
-
-**项目名称：** 企业知识库智能客服（RAG + MCP）
-
-**一句话：** 基于 MCP 协议消费企业知识中台的混合检索能力，结合通义千问实现可溯源、可降级的多轮智能客服，并支持按项目动态加载系统提示词。
-
-**职责 / 成果（示例条目，按实际删改）：**
-
-- 设计并实现 RAG 问答编排层：检索解析、上下文拼装、LLM 生成、引用与 `trace_id` 回传一体化；
-- 实现 MCP TCP 客户端，解耦「客服应用」与「数据中台」，通过标准化工具调用完成检索与 Prompt 拉取；
-- 使用 Streamlit 搭建多会话客服界面，PostgreSQL 持久化历史消息与知识库引用；
-- 落地降级策略（无 Key / 召回失败 / 生成失败）与 Prompt 短缓存，提升演示与联调稳定性；
-- 对接中台混合检索与全链路追踪，支持问题排查与效果复盘。
-
-**关键词：** Python · RAG · MCP · Streamlit · DashScope/Qwen · PostgreSQL · 混合检索 · 可观测性 · 微服务解耦
+1. **UI 零业务分支** — 页面只调 `CustomerService`  
+2. **图内是业务，Harness 是护栏** — 复杂 if/else 在节点里；硬顶在 Harness  
+3. **工具契约稳定** — Agent 只认工具名；换实现改 `tools.py` 即可  
 
 ---
 
-## License / 说明
+## 10. 常见问题
 
-本应用作为 AI 数据中台的上层示例项目提供，便于学习 RAG 应用分层与 MCP 集成方式。  
-若拆分为独立仓库对外展示，请自行补充 License，并**勿提交**含真实密钥的 `.env` 文件。
+**Q：页面能聊，但一直说知识库没有 / 搜不到图？**  
+A：检查 MCP 是否启动；`PROJECT_ID` / `MEDIA_PROJECT_ID` 是否指对项目；素材是否已 **发布**（仅上传未发布不可检索）；改完中台 MCP 代码后是否 **重启了 MCP**。
+
+**Q：显示 `tool×8 · degraded`？**  
+A：工具循环打满硬顶。常见原因：工具一直报错（如 MCP 连错地址）、或质检一直认为不够。先看 `trace_id` 与 MCP/API 日志。
+
+**Q：追问补充后方案乱了 / 像重新开始？**  
+A：确认加载的是同一会话，且 `thread_id` 被正确恢复；不要在 Clarify 未完成时新开无关会话硬聊。
+
+**Q：要配工艺但一直缺参数？**  
+A：先确认 `uv run python api.py`（工艺）已启动；五要素由工艺侧校验，客服只负责把 `missing` 问出来。
+
+**Q：大模型报错 / 没密钥？**  
+A：密钥配在 **中台根目录** `.env` 的 `DASHSCOPE_API_KEY`，不是客服目录。
+
+---
+
+## 11. 术语小词典
+
+| 词 | 白话解释 |
+|----|----------|
+| Agent | 会「先想再调用工具」的规划器，不是固定死脚本 |
+| Clarify | 信息不够时向用户追问补全 |
+| Tool Loop | 调工具 → 看结果 → 不够再调，循环有上限 |
+| Fallback | 工具试尽后的兜底回答 |
+| Harness | 外面的安全带：限制次数、记审计日志 |
+| MCP | 中台提供的标准工具接口 |
+| Checkpoint | 对话图的存档，用于打断后继续 |
+| session_id | 聊天记录 ID（气泡列表） |
+| thread_id | 状态机存档 ID（追问恢复用） |
+| degraded | 降级：未完美完成（如打满轮次）仍给出当前最佳答复 |
+| attachments | 附件列表（图片/视频的签名 URL 等） |
+
+---
+
+## 12. 更深入的文档
+
+- 流程与节点细节：[FLOW_ANALYSIS.md](./FLOW_ANALYSIS.md)  
+- **客服如何与工艺选型通信（代码 + 设计取舍）**：[PROCESS_CONFIG_COMM.md](./PROCESS_CONFIG_COMM.md)  
+- 数据中台总览：[../../README.md](../../README.md)  
+- 素材中心：[../ai_mutli_base/README.md](../ai_mutli_base/README.md)  
+- 工艺选型：[../ai_quotation/README.md](../ai_quotation/README.md)  
